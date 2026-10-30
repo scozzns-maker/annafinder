@@ -361,7 +361,7 @@ h3{margin:0 0 10px;font-size:11.5px;font-weight:700;letter-spacing:.07em;text-tr
   $("next-name").textContent = nextStop ? nextStop.name : "Missione in corso";
   $("to-next").textContent = nextStop ? `${km(gc(SHIP_LL, nextStop.ll))} in linea d'aria` : "nel Mare di Ross";
   $("from-home").textContent = km(gc(HOME, SHIP_LL));
-  $("foot").textContent = `Lo spillo segna l'ultima posizione AIS pubblica: ${new Intl.DateTimeFormat("it-IT", { timeZone: "UTC", day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(fixDate)} UTC (fonti ${POS.sources || "AIS pubblico"}). Lo spillo si sposta da solo ogni mattina. La rotta prevista segue i viaggi degli anni scorsi.`;
+  $("foot").textContent = `Lo spillo segna l'ultima posizione AIS pubblica: ${new Intl.DateTimeFormat("it-IT", { timeZone: "UTC", day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(fixDate)} UTC (fonti ${POS.sources || "AIS pubblico"}). Lo spillo si aggiorna da solo ogni 6 ore. La rotta prevista segue i viaggi degli anni scorsi.`;
 
   function tick() {
     const now = Date.now();
