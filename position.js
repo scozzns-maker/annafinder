@@ -5,7 +5,7 @@
    track = punti già percorsi dopo il Mediterraneo centrale, dal più vecchio: [lon, lat, fix UTC oppure null se è solo un punto di passaggio]
    sources = siti da cui viene la posizione */
 window.ANNA = {
-  "ship": { "lon": -16.48030, "lat": 32.04991, "fix": "2026-10-31T15:22:00Z", "speed": 0.6, "course": 261 },
+  "ship": { "lon": -17.74884, "lat": 32.04269, "fix": "2026-10-31T20:33:00Z", "speed": 14.5, "course": 268 },
   "area": "Oceano Atlantico",
   "where": "nell'Oceano Atlantico",
   "track": [
