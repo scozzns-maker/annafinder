@@ -89,6 +89,7 @@ body{
 .legend i{display:inline-block;width:22px;height:0;vertical-align:middle;margin-right:8px}
 .legend .done{border-top:3px solid var(--hull)}
 .legend .plan{border-top:3px dotted #fff}
+.legend .est{border-top:3px dashed var(--hull)}
 .btn{font:inherit;font-weight:600;font-size:14px;color:var(--ice);background:rgba(10,20,48,.6);border:1px solid var(--line);border-radius:999px;padding:9px 15px;cursor:pointer;backdrop-filter:blur(6px);transition:background .15s,border-color .15s,transform .15s}
 .btn:hover{background:var(--surface-2);border-color:rgba(190,215,255,.35)}
 .btn:active{transform:translateY(1px)}
@@ -191,6 +192,7 @@ h3{margin:0 0 10px;font-size:11.5px;font-weight:700;letter-spacing:.07em;text-tr
       <div class="overlay legend" aria-hidden="true">
         <div><i class="done"></i>rotta percorsa</div>
         <div><i class="plan"></i>rotta prevista</div>
+        <div><i class="est"></i>tratto stimato</div>
       </div>
       <div class="caption" id="caption" hidden></div>
       <div class="overlay controls">
@@ -211,7 +213,7 @@ h3{margin:0 0 10px;font-size:11.5px;font-weight:700;letter-spacing:.07em;text-tr
       </div>
 
       <dl class="stats">
-        <div><dt>Coordinate</dt><dd class="mono" id="coords"></dd></div>
+        <div><dt>Coordinate</dt><dd class="mono" id="coords"></dd><dd class="sub" id="coords-note"></dd></div>
         <div><dt>Ultimo segnale</dt><dd id="fix"></dd><dd class="sub" id="ago"></dd></div>
         <div><dt>Velocità</dt><dd id="speed"></dd><dd class="sub" id="speed-note"></dd></div>
         <div><dt>Ora a bordo</dt><dd class="mono" id="shiptime"></dd><dd class="sub" id="zone"></dd></div>
@@ -277,13 +279,14 @@ h3{margin:0 0 10px;font-size:11.5px;font-weight:700;letter-spacing:.07em;text-tr
   };
   const POS = (window.ANNA && window.ANNA.ship) ? window.ANNA : FALLBACK;
   const SHIP = POS.ship;
-  const SHIP_LL = [SHIP.lon, SHIP.lat];
+  const FIX_LL = [SHIP.lon, SHIP.lat]; // ultimo segnale AIS
+  let SHIP_LL = FIX_LL;               // dove sta lo spillo (stima di adesso, se possibile)
   const HOME = [13.77, 45.65]; // Trieste, porto di casa della nave
   const NEAR_KM = 25;
 
   const MED = [[14.27, 40.84], [14.05, 40.62], [12.6, 41.2], [11.79, 42.09], [12.6, 40.8], [15.45, 38.35],
     [15.56, 38.19], [15.62, 38.27], [12.4, 38.35], [8.6, 37.9]];
-  const TRAVELED = { type: "LineString", coordinates: [...MED, ...(POS.track || []).map(p => [p[0], p[1]]), SHIP_LL] };
+  const TRAVELED = { type: "LineString", coordinates: [...MED, ...(POS.track || []).map(p => [p[0], p[1]]), FIX_LL] };
 
   // Rotta prevista dopo Gibilterra, con le tappe principali
   const ROUTE = [
@@ -302,6 +305,29 @@ h3{margin:0 0 10px;font-size:11.5px;font-weight:700;letter-spacing:.07em;text-tr
     const det = gc(a, SHIP_LL) + gc(SHIP_LL, b) - gc(a, b);
     if (det < bestDetour) { bestDetour = det; seg = j; }
   }
+  // Stima di dove si trova adesso: dall'ultimo segnale avanti lungo la rotta, alla velocità di quel momento.
+  // Vale al massimo per 48 ore e si ferma alla prossima tappa; se la nave era quasi ferma non si stima niente.
+  const EST_MAX_H = 48;
+  const estH = Math.max(0, Math.min(EST_MAX_H, (Date.now() - new Date(SHIP.fix).getTime()) / 3.6e6));
+  const toV = ll => { const l = ll[0] * RAD, f = ll[1] * RAD; return [Math.cos(f) * Math.cos(l), Math.cos(f) * Math.sin(l), Math.sin(f)]; };
+  const slerp = (a, b, t) => {
+    const w = gc(a, b); if (w < 1e-9) return a;
+    const A = toV(a), B = toV(b), k1 = Math.sin((1 - t) * w) / Math.sin(w), k2 = Math.sin(t * w) / Math.sin(w);
+    const v = [0, 1, 2].map(i => k1 * A[i] + k2 * B[i]);
+    return [Math.atan2(v[1], v[0]) / RAD, Math.asin(Math.max(-1, Math.min(1, v[2]))) / RAD];
+  };
+  const EST_PATH = [FIX_LL];
+  let ESTIMATED = false;
+  if (SHIP.speed >= 3 && estH >= 1) {
+    let left = SHIP.speed * 1.852 * estH / R_KM, cur = FIX_LL;
+    for (let j = seg + 1; j < ROUTE.length && left > 0; j++) {
+      const b = ROUTE[j].ll, d = gc(cur, b);
+      if (d > left) { cur = slerp(cur, b, left / d); left = 0; EST_PATH.push(cur); }
+      else { cur = b; left -= d; EST_PATH.push(b); seg = j; if (ROUTE[j].stop) left = 0; }
+    }
+    if (EST_PATH.length > 1) { SHIP_LL = cur; ESTIMATED = true; }
+  }
+  const ESTLINE = { type: "LineString", coordinates: EST_PATH };
   const PLANNED = { type: "LineString", coordinates: [SHIP_LL, ...ROUTE.slice(seg + 1).map(r => r.ll)] };
 
   const STOPS = [
@@ -320,7 +346,7 @@ h3{margin:0 0 10px;font-size:11.5px;font-weight:700;letter-spacing:.07em;text-tr
     STOPS.push(s);
   });
   if (!nowStop) {
-    const here = { name: POS.area || "In navigazione", note: "adesso, qui c'è Anna", ll: SHIP_LL, state: "now" };
+    const here = { name: POS.area || "In navigazione", note: ESTIMATED ? "adesso, Anna dovrebbe essere qui" : "adesso, qui c'è Anna", ll: SHIP_LL, state: "now" };
     const idx = STOPS.findIndex(s => s.state === "next" || s.state === "plan");
     if (idx < 0) STOPS.push(here); else STOPS.splice(idx, 0, here);
   }
@@ -345,23 +371,29 @@ h3{margin:0 0 10px;font-size:11.5px;font-weight:700;letter-spacing:.07em;text-tr
   const near = LANDMARKS.map(l => ({ ...l, d: gc(l.ll, SHIP_LL) })).sort((a, b) => a.d - b.d)[0];
   const dir = DIRS[Math.round(bearing(near.ll, SHIP_LL) / 45) % 8];
   const toward = nextStop ? `, in rotta verso ${nextStop.short || nextStop.name}.` : ".";
-  $("where").textContent = `Anna è ${POS.where || "in navigazione"}`;
+  $("where").textContent = ESTIMATED ? `Anna adesso dovrebbe essere ${POS.where || "in navigazione"}` : `Anna è ${POS.where || "in navigazione"}`;
+  const bubble = document.querySelector(".bubble");
+  if (bubble && ESTIMATED) bubble.textContent = "Anna è più o meno qui!";
   $("near").textContent = nowStop ? `È arrivata ${nowStop.at}.${nextStop ? ` Poi si riparte per ${nextStop.short || nextStop.name}.` : ""}`
     : near.d * R_KM < NEAR_KM ? `Proprio vicino a ${near.n}${toward}`
     : `Circa ${km(near.d)} a ${dir} ${near.of}${toward}`;
-  $("coords").innerHTML = `${dm(SHIP.lat, "N", "S")}<br>${dm(SHIP.lon, "E", "O")}`;
+  $("coords").innerHTML = `${dm(SHIP_LL[1], "N", "S")}<br>${dm(SHIP_LL[0], "E", "O")}`;
+  $("coords-note").textContent = ESTIMATED ? "stimate per adesso" : "dell'ultimo segnale";
 
   const fixDate = new Date(SHIP.fix);
   const fmtIt = new Intl.DateTimeFormat("it-IT", { timeZone: "Europe/Rome", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
   $("fix").textContent = fmtIt.format(fixDate);
-  const zone = Math.round(SHIP.lon / 15);
+  const zone = Math.round(SHIP_LL[0] / 15);
   $("zone").textContent = `fuso nautico UTC${zone === 0 ? "" : (zone > 0 ? "+" : "−") + Math.abs(zone)}`;
   $("speed").textContent = `${String(SHIP.speed).replace(".", ",")} nodi`;
   $("speed-note").textContent = SHIP.speed < 1 ? "quasi ferma al momento del segnale" : SHIP.speed < 6 ? "andatura tranquilla" : "in navigazione";
   $("next-name").textContent = nextStop ? nextStop.name : "Missione in corso";
   $("to-next").textContent = nextStop ? `${km(gc(SHIP_LL, nextStop.ll))} in linea d'aria` : "nel Mare di Ross";
   $("from-home").textContent = km(gc(HOME, SHIP_LL));
-  $("foot").textContent = `Lo spillo segna l'ultima posizione AIS pubblica: ${new Intl.DateTimeFormat("it-IT", { timeZone: "UTC", day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(fixDate)} UTC (fonti ${POS.sources || "AIS pubblico"}). Lo spillo si aggiorna da solo ogni 6 ore. La rotta prevista segue i viaggi degli anni scorsi.`;
+  const fixTxt = new Intl.DateTimeFormat("it-IT", { timeZone: "UTC", day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(fixDate);
+  $("foot").textContent = ESTIMATED
+    ? `Lo spillo mostra una stima di dove si trova la nave adesso. Parte dall'ultima posizione AIS pubblica (${fixTxt} UTC, fonti ${POS.sources || "AIS pubblico"}) e prosegue lungo la rotta prevista alla velocità di quel momento, per le ore passate da allora (al massimo 48). Il puntino rosso segna l'ultimo segnale, il tratto tratteggiato è la parte stimata. Il segnale viene aggiornato una volta al giorno e arriva con circa 14 ore di ritardo. La rotta prevista segue i viaggi degli anni scorsi.`
+    : `Lo spillo segna l'ultima posizione AIS pubblica: ${fixTxt} UTC (fonti ${POS.sources || "AIS pubblico"}). Il segnale viene aggiornato una volta al giorno. La rotta prevista segue i viaggi degli anni scorsi.`;
 
   function tick() {
     const now = Date.now();
@@ -373,7 +405,8 @@ h3{margin:0 0 10px;font-size:11.5px;font-weight:700;letter-spacing:.07em;text-tr
     else ago = `${Math.round(h / 24)} giorni fa`;
     $("ago").textContent = `ora italiana · ${ago}`;
     const chip = $("chip");
-    if (h < 6) { chip.className = "chip fresh"; $("chip-text").textContent = "Segnale recente"; }
+    if (ESTIMATED) { chip.className = "chip warn"; $("chip-text").textContent = `Posizione stimata · ultimo segnale ${ago}`; }
+    else if (h < 6) { chip.className = "chip fresh"; $("chip-text").textContent = "Segnale recente"; }
     else { chip.className = "chip warn"; $("chip-text").textContent = `Posizione di ${ago.replace(" fa", "").replace("circa ", "")} fa`; }
     const t = new Date(now + zone * 3.6e6);
     $("shiptime").textContent = `${String(t.getUTCHours()).padStart(2, "0")}:${String(t.getUTCMinutes()).padStart(2, "0")}`;
@@ -478,6 +511,16 @@ h3{margin:0 0 10px;font-size:11.5px;font-weight:700;letter-spacing:.07em;text-tr
     ctx.lineCap = "round"; ctx.lineJoin = "round";
     ctx.beginPath(); path(TRAVELED); ctx.strokeStyle = "rgba(10,20,48,.35)"; ctx.lineWidth = 5.5; ctx.stroke();
     ctx.beginPath(); path(TRAVELED); ctx.strokeStyle = "#ff4b38"; ctx.lineWidth = 3; ctx.stroke();
+    // tratto stimato dopo l'ultimo segnale
+    if (ESTIMATED) {
+      ctx.save(); ctx.setLineDash([6, 6]); ctx.lineCap = "butt";
+      ctx.beginPath(); path(ESTLINE); ctx.strokeStyle = "#ff4b38"; ctx.lineWidth = 3; ctx.stroke();
+      ctx.restore();
+      if (front(FIX_LL, .05)) {
+        const q = projection(FIX_LL);
+        if (q) { ctx.beginPath(); ctx.arc(q[0], q[1], 4.5, 0, Math.PI * 2); ctx.fillStyle = "#ff4b38"; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = "#fff"; ctx.stroke(); }
+      }
+    }
     // ombreggiatura sferica
     g = ctx.createRadialGradient(cx - r * .3, cy - r * .35, r * .15, cx, cy, r * 1.02);
     g.addColorStop(0, "rgba(255,255,255,.12)"); g.addColorStop(.5, "rgba(255,255,255,0)"); g.addColorStop(1, "rgba(3,9,28,.5)");
